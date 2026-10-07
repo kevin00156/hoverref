@@ -101,6 +101,8 @@ claude plugin validate .
 claude plugin test .
 ```
 
+CI 會在 Linux 和 Windows 上跑同樣的檢查。發佈新版時，先改 `.claude-plugin/plugin.json` 的 `version`，再推一個對應的 `v` 開頭標籤。Claude Code 只在版本號變了的時候，才會更新使用者已經安裝的那份。
+
 設計說明和取捨寫在 [docs/design.md](docs/design.md)。
 
 ## 授權

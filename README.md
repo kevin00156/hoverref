@@ -101,6 +101,8 @@ claude plugin validate .
 claude plugin test .
 ```
 
+CI runs the same checks on Linux and Windows. To release, bump `version` in `.claude-plugin/plugin.json` (Claude Code only updates installed copies when it changes), then push a matching `v` tag.
+
 Design notes and trade-offs (in Traditional Chinese) are in [docs/design.md](docs/design.md).
 
 ## License

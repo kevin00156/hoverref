@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  # Function hooks are early access: run against the newest Claude Code every
+  # week so an upstream change that breaks the plugin shows up without a push.
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      DISABLE_AUTOUPDATER: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install -g @anthropic-ai/claude-code
+      - run: claude --version
+      - run: claude plugin validate .
+      - run: claude plugin test .
+      # Claude Code only offers an update when the manifest version changes,
+      # so a tag that disagrees with it would ship nothing.
+      - if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(node -p "require('./.claude-plugin/plugin.json').version")
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME, plugin.json $version"; exit 1; }
