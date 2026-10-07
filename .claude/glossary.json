@@ -1,0 +1,17 @@
+{
+  "terms": [
+    {
+      "name": "懸停卡片",
+      "aliases": [
+        "hover card"
+      ],
+      "target": "docs/design.md",
+      "summary": "滑鼠移到段落上時跳出的框，列出這段提到的工單、檔案和名詞"
+    },
+    {
+      "name": "標記規則",
+      "target": "docs/design.md",
+      "summary": "每則回覆只標第一次出現，程式碼和網址裡不標"
+    }
+  ]
+}

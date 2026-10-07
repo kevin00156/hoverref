@@ -1,0 +1,19 @@
+{
+  "trackers": [
+    {
+      "kind": "plane",
+      "baseUrl": "http://plane.example:8090",
+      "workspace": "work",
+      "prefixes": ["CK", "CT"],
+      "tokenFile": "~/.config/plane/token"
+    }
+  ],
+  "terms": [
+    {
+      "name": "車籍表",
+      "aliases": ["vehicle registry"],
+      "target": "docs/vehicle-registry.md",
+      "summary": "每台車的參數收成一張表，取代散落各處的常數"
+    }
+  ]
+}

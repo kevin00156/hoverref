@@ -1,0 +1,6 @@
+{
+  "name": "glossary",
+  "version": "0.1.0",
+  "description": "Turns ticket IDs in Claude's replies into links with a hover card showing title and state",
+  "types": "./types/index.d.ts"
+}
