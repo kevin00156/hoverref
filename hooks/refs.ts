@@ -18,6 +18,7 @@ export type Match =
   | { kind: 'ticket'; start: number; end: number; id: string; tracker: PlaneTracker }
   | { kind: 'term'; start: number; end: number; term: Term }
   | { kind: 'file'; start: number; end: number; path: string; line?: number }
+  | { kind: 'commit'; start: number; end: number; hash: string }
 
 export type Link = { start: number; end: number; href: string; key: string }
 
@@ -65,14 +66,18 @@ export function parseTerm(raw: unknown, i: number, base: string): Term {
   return { name: t.name as string, aliases, target: t.target as string, summary: t.summary as string, base }
 }
 
-// The repo's terms win: a user-level term is dropped when any of its spellings
-// is taken by a repo term, so one word never points two ways.
-export function mergeConfigs(user: Config, repo: Config): Config {
-  const taken = new Set(repo.terms.flatMap(spellings))
-  return {
-    trackers: [...user.trackers, ...repo.trackers],
-    terms: [...repo.terms, ...user.terms.filter(t => !spellings(t).some(s => taken.has(s)))],
+// Layers come in priority order, the global one last: a term is dropped when
+// any of its spellings is taken by a layer before it, so one word never
+// points two ways.
+export function mergeLayers(layers: readonly Config[]): Config {
+  const taken = new Set<string>()
+  const terms: Term[] = []
+  for (const term of layers.flatMap(l => l.terms)) {
+    if (spellings(term).some(s => taken.has(s))) continue
+    for (const s of spellings(term)) taken.add(s)
+    terms.push(term)
   }
+  return { trackers: layers.flatMap(l => l.trackers), terms }
 }
 
 export function spellings(term: Term): string[] {
@@ -130,6 +135,19 @@ function protectedSpans(block: string): Array<[number, number]> {
 const PATH = String.raw`(?:[A-Za-z]:[\\/]|~[\\/]|\.{1,2}[\\/]|[\\/])?(?:[\w.@+-]+[\\/])*[\w@+-][\w.@+-]*\.[A-Za-z][A-Za-z0-9]{0,7}(?::(?<line>\d+)(?:[:-]\d+)?)?`
 const PROSE_PATH = new RegExp(String.raw`(?<![\w./\\:-])${PATH}(?![\w/\\-])`, 'g')
 const WHOLE_PATH = new RegExp(String.raw`^${PATH}$`)
+
+// A hash must mix letters and digits: a bare number or an English word made of
+// a-f is far likelier than a hash spelled that way. Candidates still have to
+// resolve to a commit in a repo the session knows to be linked.
+const HASH = String.raw`[0-9a-f]{7,40}`
+const PROSE_HASH = new RegExp(String.raw`(?<![0-9A-Za-z_/.#-])${HASH}(?![0-9A-Za-z_-])`, 'g')
+const WHOLE_HASH = new RegExp(String.raw`^${HASH}$`)
+const looksLikeHash = (s: string) => /[a-f]/.test(s) && /\d/.test(s)
+
+export function githubCommitUrl(remote: string, hash: string): string | undefined {
+  const m = /github\.com[:/]([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/.exec(remote.trim())
+  return m === null ? undefined : `https://github.com/${m[1]}/${m[2]}/commit/${hash}`
+}
 
 function ticketPattern(config: Config): RegExp | undefined {
   const prefixes = config.trackers.flatMap(t => t.prefixes)
@@ -190,11 +208,18 @@ export function scanBlock(block: string, config: Config): Match[] {
     const end = m.index + m[0].length
     if (isProse(m.index, end)) found.push(fileMatch(m, m.index, end))
   }
-  // A path the agent wrote as inline code is linked as a whole, backticks
-  // included, so the link keeps its code styling.
+  for (const m of block.matchAll(PROSE_HASH)) {
+    const end = m.index + m[0].length
+    if (looksLikeHash(m[0]) && isProse(m.index, end)) found.push({ kind: 'commit', start: m.index, end, hash: m[0] })
+  }
+  // A path or hash the agent wrote as inline code is linked as a whole,
+  // backticks included, so the link keeps its code styling.
   for (const m of block.matchAll(INLINE_CODE)) {
-    const inner = WHOLE_PATH.exec((m[2] ?? '').trim())
-    if (inner !== null) found.push({ ...fileMatch(inner, m.index, m.index + m[0].length) })
+    const code = (m[2] ?? '').trim()
+    const end = m.index + m[0].length
+    const path = WHOLE_PATH.exec(code)
+    if (path !== null) found.push(fileMatch(path, m.index, end))
+    else if (WHOLE_HASH.test(code) && looksLikeHash(code)) found.push({ kind: 'commit', start: m.index, end, hash: code })
   }
 
   found.sort((a, b) => a.start - b.start || b.end - a.end)

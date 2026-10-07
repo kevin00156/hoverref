@@ -4,9 +4,10 @@ import {
   displayWidth,
   fileHref,
   fitWidth,
+  githubCommitUrl,
   isRelative,
   linkify,
-  mergeConfigs,
+  mergeLayers,
   parseConfig,
   parentDir,
   parseFileHref,
@@ -29,7 +30,8 @@ const config = parseConfig(
   '/repo',
 )
 
-const keyOf = (m: Match) => (m.kind === 'ticket' ? m.id : m.kind === 'term' ? m.term.name : m.path)
+const keyOf = (m: Match) =>
+  m.kind === 'ticket' ? m.id : m.kind === 'term' ? m.term.name : m.kind === 'commit' ? m.hash : m.path
 const show = (block: string, seen = new Set<string>()) =>
   linkify(
     block,
@@ -85,18 +87,30 @@ test('a fenced block stays whole and unlinked', async () => {
   expect(kinds(blocks[1] ?? '')).toEqual([])
 })
 
-test('repo terms win over user terms that share any spelling', async () => {
-  const user = parseConfig(
-    JSON.stringify({
-      terms: [
-        { name: '車籍', target: 'a', summary: 'user' },
-        { name: 'other', target: 'b', summary: 'user' },
-      ],
-    }),
-    '/home',
-  )
-  const repo = parseConfig(JSON.stringify({ terms: [{ name: 'x', aliases: ['車籍'], target: 'c', summary: 'repo' }] }), '/r')
-  expect(mergeConfigs(user, repo).terms.map(t => t.name)).toEqual(['x', 'other'])
+test('earlier layers win over later ones that share any spelling', async () => {
+  const layer = (base: string, terms: object[]) => parseConfig(JSON.stringify({ terms }), base)
+  const repoA = layer('/a', [{ name: 'x', aliases: ['車籍'], target: 'c', summary: 'a' }])
+  const repoB = layer('/b', [{ name: 'x', target: 'd', summary: 'b' }, { name: 'y', target: 'e', summary: 'b' }])
+  const user = layer('/home', [{ name: '車籍', target: 'a', summary: 'user' }, { name: 'other', target: 'b', summary: 'user' }])
+  const merged = mergeLayers([repoA, repoB, user]).terms
+  expect(merged.map(t => `${t.name}@${t.base}`)).toEqual(['x@/a', 'y@/b', 'other@/home'])
+})
+
+test('commit hashes in prose and inline code are candidates; numbers and words are not', async () => {
+  expect(kinds('fixed in 46ce847 and `099543a`, see e4141ba0c1')).toEqual([
+    'commit:46ce847',
+    'commit:`099543a`',
+    'commit:e4141ba0c1',
+  ])
+  expect(kinds('order 1234567, word defaced, short ab12cd, upper 46CE847, url http://x/46ce847')).toEqual([])
+})
+
+test('GitHub remotes give commit URLs, others none', async () => {
+  const url = 'https://github.com/yaotek/ck_cutter/commit/abc1234'
+  expect(githubCommitUrl('git@github.com:yaotek/ck_cutter.git', 'abc1234')).toBe(url)
+  expect(githubCommitUrl('https://github.com/yaotek/ck_cutter', 'abc1234')).toBe(url)
+  expect(githubCommitUrl('ssh://git@github.com/yaotek/ck_cutter.git\n', 'abc1234')).toBe(url)
+  expect(githubCommitUrl('http://gitea.local/me/repo.git', 'abc1234')).toBeUndefined()
 })
 
 test('file hrefs round-trip with the line number', async () => {

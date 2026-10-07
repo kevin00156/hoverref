@@ -1,20 +1,20 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { TicketInfo } from '../types'
+import type { CommitInfo, TicketInfo } from '../types'
 import { parseWorkItem, workItemUrl } from './plane'
 import {
   EMPTY,
   browseUrl,
   fileHref,
   fitWidth,
+  githubCommitUrl,
   isRelative,
   linkify,
-  mergeConfigs,
-  parseConfig,
+  mergeLayers,
   parentDir,
+  parseConfig,
   parseFileHref,
-  parseTerm,
   pushRoot,
   resolvePath,
   scanBlock,
@@ -24,6 +24,7 @@ import {
 import type { Config, Link, Match, PlaneTracker, Term } from './refs'
 
 const tickets = atom({ plugin: 'glossary', key: 'tickets' } as const, {} as Record<string, TicketInfo>)
+const commits = atom({ plugin: 'glossary', key: 'commits' } as const, {} as Record<string, CommitInfo | null>)
 
 const FETCH_TIMEOUT_MS = 5000
 const MAX_FILE_CHECKS = 60
@@ -33,35 +34,51 @@ const ADD_TOOL = 'mcp__glossary__add'
 
 const USAGE = `# Glossary links
 
-When your replies are shown to the user, ticket IDs, file paths that exist and registered project terms are turned into links with a hover card explaining them. Write them as plain text; do not add your own markdown links for them.
+When your replies are shown to the user, ticket IDs, commit hashes, file paths that exist and registered project terms are turned into links with a hover card explaining them. Write them as plain text; do not add your own markdown links for them.
 
-When you introduce a project-specific term the user may not know (an internal name, a label coined for a component or process, a reference document) that is not a general technical term, register it once with the ${ADD_TOOL} tool: \`name\`, \`target\` (a repo-relative path or an http(s) URL that explains it, which you have seen exist), and a one-line \`summary\` in the user's language. If the tool says the term is already registered or clashes with an entry, move on; never work around it.`
+When you introduce a project-specific term the user may not know (an internal name, a label coined for a component or process, a reference document) that is not a general technical term, register it once with the ${ADD_TOOL} tool: \`name\`, \`target\` (a file path or an http(s) URL that explains it, which you have seen exist), and a one-line \`summary\` in the user's language. It is stored in the glossary of the repo the target belongs to; pass \`scope: "global"\` only for a term that means the same thing across all of the user's projects. If the tool says the term is already registered or clashes with an entry, move on; never work around it.`
 
 type Ref =
   | { kind: 'ticket'; key: string; href: string; id: string; tracker: PlaneTracker }
   | { kind: 'file'; key: string; href: string; label: string; path: string; line?: number }
   | { kind: 'term'; key: string; href?: string; term: Term }
+  | { kind: 'commit'; key: string; href?: string; hash: string; info: CommitInfo }
 
 type Located = { start: number; end: number; ref: Ref }
+
+type Lookup = { files: number; commits: Record<string, CommitInfo | null> }
 
 // Module variables start over on a hot reload; session.start fires again
 // then, so they are refilled before the next draw needs them.
 let config: Config = EMPTY
 let home = ''
 let root = ''
-let repoFile = ''
+let userFile = ''
+let userLayer: Config = EMPTY
+// Each directory's own glossary, keyed by the lowercased directory.
+const repoLayers = new Map<string, Config>()
+// Directories of files this session read or wrote, most recent first: their
+// repo root, or the file's own folder outside any repo. A relative path the
+// session root does not hold is looked up in these, and their glossaries are
+// loaded, since an agent works in repos below wherever the session started.
+let roots: string[] = []
+const gitRoots = new Map<string, string | null>()
+const remotes = new Map<string, string | null>()
 const tokens = new Map<PlaneTracker, string | null>()
 const inflight = new Set<string>()
 // null: the path is not a file. lines: null until a card first needs them.
 const files = new Map<string, { lines: string[] | null } | null>()
-const addedThisTurn: string[] = []
-// Repos this session has read or written files in, most recent first. A
-// relative path the session root does not hold is looked up in these, since
-// an agent names files relative to the repo it is working in.
-let roots: string[] = []
-const repoOf = new Map<string, string>()
+const addedThisTurn: Array<{ name: string; file: string }> = []
 
 const slashes = (p: string) => p.replace(/\\/g, '/')
+const isUrl = (s: string) => /^https?:\/\//.test(s)
+// The session root first, then the touched directories; one per directory.
+const searchDirs = () => [...new Map([root, ...roots].map(d => [d.toLowerCase(), d])).values()]
+
+function rebuildConfig(): void {
+  const layers = searchDirs().flatMap(d => repoLayers.get(d.toLowerCase()) ?? [])
+  config = mergeLayers([...layers, userLayer])
+}
 
 async function loadLayer($: EngineInterface, path: string, base: string): Promise<Config> {
   if (!(await $.fs.exists(path))) return EMPTY
@@ -73,14 +90,25 @@ async function loadLayer($: EngineInterface, path: string, base: string): Promis
   }
 }
 
+// A session started in the home directory reaches the user's file through
+// its root too; it stays the global layer only.
+async function ensureLayer($: EngineInterface, dir: string): Promise<void> {
+  const key = dir.toLowerCase()
+  if (repoLayers.has(key)) return
+  const file = `${dir}/.claude/glossary.json`
+  repoLayers.set(key, file.toLowerCase() === userFile.toLowerCase() ? EMPTY : await loadLayer($, file, dir))
+}
+
 async function loadConfig($: EngineInterface): Promise<void> {
   home = slashes((await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')) ?? '')
   root = slashes(await $.session.root())
-  const userFile = `${home}/.claude/glossary.json`
-  repoFile = `${root}/.claude/glossary.json`
-  const user = await loadLayer($, userFile, home)
-  // A session started in the home directory has one file serving as both.
-  config = repoFile.toLowerCase() === userFile.toLowerCase() ? user : mergeConfigs(user, await loadLayer($, repoFile, root))
+  userFile = `${home}/.claude/glossary.json`
+  userLayer = await loadLayer($, userFile, home)
+  repoLayers.clear()
+  roots = []
+  await ensureLayer($, root)
+  await seedRoots($).catch(() => undefined)
+  rebuildConfig()
 }
 
 async function readToken($: EngineInterface, tracker: PlaneTracker): Promise<string | null> {
@@ -101,6 +129,32 @@ async function fetchTicket($: EngineInterface, id: string, tracker: PlaneTracker
   ]).catch((): TicketInfo => ({ status: 'error', reason: '連不到 Plane' }))
   inflight.delete(id)
   await update($, tickets, all => ({ ...all, [id]: info }))
+}
+
+async function originOf($: EngineInterface, dir: string): Promise<string | null> {
+  const cached = remotes.get(dir)
+  if (cached !== undefined) return cached
+  const ran = await $.process.run(['git', '-C', dir, 'remote', 'get-url', 'origin']).catch(() => undefined)
+  const remote = ran?.exitCode === 0 ? ran.stdout.trim() : null
+  remotes.set(dir, remote)
+  return remote
+}
+
+// The first directory, in search order, whose repo holds the commit wins.
+async function lookupCommit($: EngineInterface, hash: string): Promise<void> {
+  let info: CommitInfo | null = null
+  for (const dir of searchDirs()) {
+    const argv = ['git', '-C', dir, 'log', '-1', '--format=%H%x1f%ad%x1f%an%x1f%s', '--date=short', `${hash}^{commit}`, '--']
+    const ran = await $.process.run(argv).catch(() => undefined)
+    if (ran?.exitCode !== 0) continue
+    const [full = hash, date = '', author = '', subject = ''] = ran.stdout.trim().split('\x1f')
+    const remote = await originOf($, dir)
+    const url = remote === null ? undefined : githubCommitUrl(remote, full)
+    info = { full, date, author, subject, ...(url === undefined ? {} : { url }) }
+    break
+  }
+  inflight.delete(`commit:${hash}`)
+  await update($, commits, all => ({ ...all, [hash]: info }))
 }
 
 async function isFile($: EngineInterface, path: string): Promise<boolean> {
@@ -127,35 +181,38 @@ async function urlExists($: EngineInterface, url: string): Promise<boolean> {
   return status !== 0 && status !== 404 && status !== 410 && status < 500
 }
 
-async function targetExists($: EngineInterface, target: string, base: string): Promise<boolean> {
-  if (/^https?:\/\//.test(target)) return urlExists($, target)
-  return isFile($, resolvePath(target, base, home))
-}
-
-// The repo a file belongs to: the nearest directory above it holding .git,
-// or the file's own directory when there is none.
-async function repoRootOf($: EngineInterface, file: string): Promise<string | undefined> {
+// The nearest directory above the file holding .git; undefined outside a repo.
+async function gitRootOf($: EngineInterface, file: string): Promise<string | undefined> {
   const start = parentDir(file)
   if (start === undefined) return undefined
-  const cached = repoOf.get(start)
-  if (cached !== undefined) return cached
-  let found = start
+  const cached = gitRoots.get(start)
+  if (cached !== undefined) return cached ?? undefined
+  let found: string | null = null
   for (let dir: string | undefined = start, depth = 0; dir !== undefined && depth < 12; dir = parentDir(dir), depth++) {
     if (await $.fs.exists(`${dir}/.git`)) {
       found = dir
       break
     }
   }
-  repoOf.set(start, found)
-  return found
+  gitRoots.set(start, found)
+  return found ?? undefined
+}
+
+async function noteDir($: EngineInterface, dir: string): Promise<void> {
+  const moved = roots[0]?.toLowerCase() !== dir.toLowerCase()
+  roots = pushRoot(roots, dir, MAX_ROOTS)
+  await ensureLayer($, dir)
+  rebuildConfig()
+  if (moved) $.ui.invalidate('ui.render')
 }
 
 async function noteFile($: EngineInterface, path: string): Promise<void> {
-  const repo = await repoRootOf($, resolvePath(path, root, home))
-  if (repo !== undefined) roots = pushRoot(roots, repo, MAX_ROOTS)
+  const file = resolvePath(path, root, home)
+  const dir = (await gitRootOf($, file)) ?? parentDir(file)
+  if (dir !== undefined) await noteDir($, dir)
 }
 
-// Replayed oldest first, so the most recently touched repo ends up first.
+// Replayed oldest first, so the most recently touched directory ends up first.
 async function seedRoots($: EngineInterface): Promise<void> {
   const rows = await $.session.messages()
   const paths = rows.flatMap(r => r.toolUses).map(u => u.input.file_path)
@@ -165,7 +222,7 @@ async function seedRoots($: EngineInterface): Promise<void> {
 }
 
 async function findFile($: EngineInterface, path: string): Promise<string | undefined> {
-  const bases = isRelative(path) ? [root, ...roots] : [root]
+  const bases = isRelative(path) ? searchDirs() : [root]
   for (const base of bases) {
     const candidate = resolvePath(path, base, home)
     if (await isFile($, candidate)) return candidate
@@ -173,10 +230,23 @@ async function findFile($: EngineInterface, path: string): Promise<string | unde
   return undefined
 }
 
-async function resolveRef($: EngineInterface, m: Match, budget: { files: number }): Promise<Ref | undefined> {
+async function resolveRef($: EngineInterface, m: Match, lookup: Lookup): Promise<Ref | undefined> {
   if (m.kind === 'ticket') return { kind: 'ticket', key: m.id, href: browseUrl(m.tracker, m.id), id: m.id, tracker: m.tracker }
+  if (m.kind === 'commit') {
+    const info = lookup.commits[m.hash]
+    if (info === undefined && !inflight.has(`commit:${m.hash}`)) {
+      inflight.add(`commit:${m.hash}`)
+      const { hash } = m
+      // A draw may not write state: the lookup's write redraws this message.
+      $.clock.after(0, () => {
+        void lookupCommit($, hash)
+      })
+    }
+    if (info === undefined || info === null) return undefined
+    return { kind: 'commit', key: `commit:${m.hash}`, hash: m.hash, info, ...(info.url === undefined ? {} : { href: info.url }) }
+  }
   if (m.kind === 'file') {
-    if (budget.files-- <= 0) return undefined
+    if (lookup.files-- <= 0) return undefined
     const path = await findFile($, m.path)
     if (path === undefined) return undefined
     const label = m.line === undefined ? m.path : `${m.path}:${m.line}`
@@ -184,7 +254,7 @@ async function resolveRef($: EngineInterface, m: Match, budget: { files: number 
   }
   const { term } = m
   const key = `term:${term.name}`
-  if (/^https?:\/\//.test(term.target)) return { kind: 'term', key, href: term.target, term }
+  if (isUrl(term.target)) return { kind: 'term', key, href: term.target, term }
   const path = resolvePath(term.target, term.base, home)
   return (await isFile($, path)) ? { kind: 'term', key, href: fileHref(path), term } : { kind: 'term', key, term }
 }
@@ -203,13 +273,48 @@ async function openInEditor($: EngineInterface, href: string): Promise<void> {
   if (ran === undefined || ran.exitCode !== 0) $.ui.toast(`glossary: 開不了 VS Code：${where}`)
 }
 
+function display(file: string): string {
+  if (file.toLowerCase().startsWith(`${root.toLowerCase()}/`)) return file.slice(root.length + 1)
+  return file.toLowerCase().startsWith(`${home.toLowerCase()}/`) ? `~${file.slice(home.length)}` : file
+}
+
+async function firstGitRepo($: EngineInterface): Promise<string | undefined> {
+  for (const dir of searchDirs()) {
+    if (await $.fs.exists(`${dir}/.git`)) return dir
+  }
+  return undefined
+}
+
+// Where a new term goes: the glossary of the repo its target lives in, or of
+// the repo the session works in for a URL; the global file when asked, or
+// when there is no repo to put it in.
+async function placeTerm(
+  $: EngineInterface,
+  target: string,
+  isGlobal: boolean,
+): Promise<{ repo?: string; target: string } | { missing: true }> {
+  if (isUrl(target)) {
+    if (!(await urlExists($, target))) return { missing: true }
+    const repo = isGlobal ? undefined : await firstGitRepo($)
+    return repo === undefined ? { target } : { repo, target }
+  }
+  const path = await findFile($, target)
+  if (path === undefined) return { missing: true }
+  const repo = isGlobal ? undefined : await gitRootOf($, path)
+  return repo === undefined ? { target: path } : { repo, target: path.slice(repo.length + 1) }
+}
+
 async function addTerm($: EngineInterface, input: Record<string, unknown>): Promise<{ result: string } | { deny: string }> {
   const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
   const name = text(input.name)
-  const target = text(input.target)
   const summary = text(input.summary)
   const aliases = Array.isArray(input.aliases) ? input.aliases.map(text).filter(a => a !== '') : []
-  if (name === '' || target === '' || summary === '') return { deny: 'name、target、summary 都必填。' }
+  const isGlobal = input.scope === 'global'
+  if (name === '' || text(input.target) === '' || summary === '') return { deny: 'name、target、summary 都必填。' }
+
+  const placed = await placeTerm($, text(input.target), isGlobal)
+  if ('missing' in placed) return { deny: `target 不存在：${text(input.target)}。只能登記確認存在的檔案或網址。` }
+  const { repo, target } = placed
 
   const wanted = [name, ...aliases]
   const clash = config.terms.find(t => spellings(t).some(s => wanted.includes(s)))
@@ -218,42 +323,47 @@ async function addTerm($: EngineInterface, input: Record<string, unknown>): Prom
     const existing = JSON.stringify({ name: clash.name, aliases: clash.aliases, target: clash.target, summary: clash.summary })
     return { deny: `「${name}」和既有條目衝突，沒有寫入。既有條目：${existing}。要改既有條目請交給使用者。` }
   }
-  if (!(await targetExists($, target, root))) return { deny: `target 不存在：${target}。只能登記確認存在的檔案或網址。` }
 
+  const file = repo === undefined ? userFile : `${repo}/.claude/glossary.json`
   let raw: { terms?: unknown } = {}
-  if (await $.fs.exists(repoFile)) {
+  if (await $.fs.exists(file)) {
     try {
-      raw = JSON.parse(await $.fs.read(repoFile)) as { terms?: unknown }
+      raw = JSON.parse(await $.fs.read(file)) as { terms?: unknown }
     } catch {
-      return { deny: `${repoFile} 不是合法的 JSON，沒有寫入。` }
+      return { deny: `${file} 不是合法的 JSON，沒有寫入。` }
     }
   }
-  const entry = { name, ...(aliases.length > 0 ? { aliases } : {}), target, summary }
-  raw.terms = [...(Array.isArray(raw.terms) ? raw.terms : []), entry]
-  await $.fs.write(repoFile, `${JSON.stringify(raw, null, 2)}\n`)
+  raw.terms = [...(Array.isArray(raw.terms) ? raw.terms : []), { name, ...(aliases.length > 0 ? { aliases } : {}), target, summary }]
+  const written = `${JSON.stringify(raw, null, 2)}\n`
+  await $.fs.write(file, written)
 
-  config = { ...config, terms: [parseTerm(entry, 0, root), ...config.terms] }
-  addedThisTurn.push(name)
+  if (repo === undefined) userLayer = parseConfig(written, home)
+  else {
+    repoLayers.set(repo.toLowerCase(), parseConfig(written, repo))
+    roots = searchDirs().some(d => d.toLowerCase() === repo.toLowerCase()) ? roots : pushRoot(roots, repo, MAX_ROOTS)
+  }
+  rebuildConfig()
+  addedThisTurn.push({ name, file })
   $.ui.invalidate('ui.render')
-  return { result: `已登記「${name}」，之後的回覆會自動加上連結和說明。` }
+  const fellBack = !isGlobal && repo === undefined ? '（target 不在任何 git repo 裡，所以寫進全域名詞庫）' : ''
+  return { result: `已登記「${name}」到 ${display(file)}${fellBack}，之後的回覆會自動加上連結和說明。` }
 }
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await loadConfig($)
-    roots = []
-    await seedRoots($).catch(() => undefined)
     await $.tool.register({
       name: 'add',
       description:
-        'Register a project-specific term so it is linked and explained wherever it appears in replies. The target must exist: a repo-relative file path or an http(s) URL.',
+        "Register a project-specific term so it is linked and explained wherever it appears in replies. The target must exist: a file path or an http(s) URL. Stored in the glossary of the target's repo unless scope is global.",
       inputSchema: {
         type: 'object',
         properties: {
           name: { type: 'string', description: 'The term as it appears in text' },
           aliases: { type: 'array', items: { type: 'string' }, description: 'Other spellings of the same thing' },
-          target: { type: 'string', description: 'Repo-relative path or http(s) URL that explains the term' },
+          target: { type: 'string', description: 'File path (relative to a repo the session works in, or absolute) or http(s) URL that explains the term' },
           summary: { type: 'string', description: "One line explaining the term, in the user's language" },
+          scope: { type: 'string', enum: ['repo', 'global'], description: 'global only for a term that means the same across all projects' },
         },
         required: ['name', 'target', 'summary'],
       },
@@ -290,9 +400,11 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
     if (addedThisTurn.length > 0) {
+      const byFile = new Map<string, string[]>()
+      for (const { name, file } of addedThisTurn.splice(0)) byFile.set(file, [...(byFile.get(file) ?? []), name])
+      const parts = [...byFile].map(([file, names]) => `${names.join('、')}（${display(file)}）`)
       // The engine prefixes the plugin's name to the line.
-      const where = repoFile.startsWith(`${root}/`) ? repoFile.slice(root.length + 1) : repoFile
-      $.ui.log(`這輪新登記了 ${addedThisTurn.splice(0).join('、')}（${where}）`)
+      $.ui.log(`這輪新登記了 ${parts.join('；')}`)
     }
     return done
   })
@@ -303,23 +415,24 @@ export const register: Register = on => {
     const scanned = blocks.map(b => scanBlock(b, config))
     if (!scanned.some(ms => ms.length > 0)) return next(e)
 
-    const budget = { files: MAX_FILE_CHECKS }
+    // Read before resolving: a lookup that lands later redraws through these.
+    const knownTickets = await read($, tickets)
+    const lookup: Lookup = { files: MAX_FILE_CHECKS, commits: await read($, commits) }
     const located: Located[][] = []
     for (const matches of scanned) {
       const found: Located[] = []
       for (const m of matches) {
-        const ref = await resolveRef($, m, budget)
+        const ref = await resolveRef($, m, lookup)
         if (ref !== undefined) found.push({ start: m.start, end: m.end, ref })
       }
       located.push(found)
     }
     if (!located.some(l => l.length > 0)) return next(e)
 
-    const known = await read($, tickets)
     // A draw may not write state, so the fetch runs from a timer and its
     // write redraws this message through the read above.
     for (const { ref } of located.flat()) {
-      if (ref.kind !== 'ticket' || known[ref.id] !== undefined || inflight.has(ref.id)) continue
+      if (ref.kind !== 'ticket' || knownTickets[ref.id] !== undefined || inflight.has(ref.id)) continue
       inflight.add(ref.id)
       const { id, tracker } = ref
       $.clock.after(0, () => {
@@ -334,8 +447,9 @@ export const register: Register = on => {
     // state is the part worth keeping.
     const describe = async (ref: Ref): Promise<string> => {
       if (ref.kind === 'term') return `${ref.term.name}  ${ref.term.summary}`
+      if (ref.kind === 'commit') return `${ref.hash}  ${ref.info.date} ${ref.info.subject}`
       if (ref.kind === 'file') return ref.line === undefined ? ref.label : `${ref.label}  ${await lineOf($, ref.path, ref.line)}`
-      const info = known[ref.id]
+      const info = knownTickets[ref.id]
       if (info === undefined) return `${ref.id}  讀取中…`
       if (info.status === 'error') return `${ref.id}  （${info.reason}）`
       return `${ref.id}  [${info.state}] ${info.title}`

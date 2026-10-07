@@ -13,17 +13,21 @@ agent 在對話裡常常提到工單編號、檔案路徑、專案內部的說�
 | 工單 | 設定檔裡的前綴規則，例如 `CK-12` | Plane 上那張工單的網頁 | 標題和狀態，從 Plane API 抓 |
 | 檔案路徑 | 渲染時檢查磁碟上存在 | 用 VS Code 打開並跳到那一行 | 被引用的那一行程式碼 |
 | 專案名詞 | 名詞庫裡登記過的詞 | 條目的 `target` | 條目的 `summary` |
+| commit | 7 到 40 位、同時含字母和數字的十六進位字串，而且在 session 知道的 repo 裡查得到 | GitHub 上的 commit 頁面，網址從 `origin` 推出；不是 GitHub 就沒有連結 | 日期和 commit 標題，從 git 查 |
 
-工單和檔案都不需要登記，只有專案名詞需要。
+工單、檔案、commit 都不需要登記，只有專案名詞需要。commit 和工單一樣在背景查詢，查到之前不標記，查到後畫面自動重畫。
 
 相對路徑先在 session 的根目錄底下找。找不到時，再到這個 session 讀過或改過的檔案所屬的 repo 裡找，最近碰過的優先。原因是 session 常常從上層資料夾開，agent 寫的卻是某個 repo 裡的相對路徑。一個檔案屬於哪個 repo，判斷方式是往上層找第一個有 `.git` 的資料夾。resume 的 session 會從逐字稿把這份清單重建回來。
 
 ## 設定檔
 
-分兩層，repo 那層優先：
+名詞庫是多層合併，前面的優先：
 
-- `~/.claude/glossary.json`：工單規則、跨 repo 通用的名詞。
-- `<repo>/.claude/glossary.json`：這個 repo 專屬的名詞，進版控。agent 新增的條目會出現在 git diff 裡，這是擋住錯誤條目的主要關卡。
+1. session 根目錄的 `.claude/glossary.json`。
+2. 這個 session 碰過的每個 repo 的 `.claude/glossary.json`，最近碰過的優先。這樣從上層資料夾開的 session 也看得到底下 repo 的名詞。
+3. 全域的 `~/.claude/glossary.json`：工單規則、跨專案通用的名詞。
+
+同一個詞（含別名）只認優先順序最前面那一條。repo 的檔案進版控，agent 新增的條目會出現在 git diff 裡，這是擋住錯誤條目的主要關卡。
 
 格式用 JSON，不用原本討論時舉例的 TOML。原因是 mod 的執行環境不能裝套件，JSON 不用另外寫解析器。範例在 `examples/glossary.example.json`。
 
@@ -45,6 +49,7 @@ Plane 的 API 金鑰不放在設定檔裡，設定檔只寫金鑰檔的路徑（
 ## 登記工具
 
 - 驗證 `target` 存在就直接寫入，不跳確認框。
+- 寫進 target 所在 repo 的名詞庫，target 存成相對於那個 repo 的路徑。target 是網址時，寫進 session 正在工作的 repo。agent 傳 `scope: "global"`，或 target 不在任何 git repo 裡時，寫進全域名詞庫，target 存成絕對路徑。
 - 同名而且 `target` 不同時拒絕寫入，把現有條目回給 agent。改既有條目只能由人來改，或人明確要求 agent 改。
 - 每輪結束時，由 mod 自己在逐字稿加一行暗色通知，列出這輪新登記的詞。原本討論的是讓 agent 在回覆結尾列出，改成 mod 做的原因是 mod 親眼看到每一次寫入，不用靠 agent 記得回報。這行通知不會送給模型。
 - 工具的用法透過系統提示詞告訴 agent，不把整份名詞清單塞進提示詞。
