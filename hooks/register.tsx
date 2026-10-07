@@ -89,7 +89,7 @@ async function loadLayer($: EngineInterface, path: string, base: string): Promis
   try {
     return parseConfig(await $.fs.read(path), base)
   } catch (err) {
-    $.ui.toast(`glossary: ${path} 讀不懂：${err instanceof Error ? err.message : String(err)}`)
+    $.ui.toast(`${$.plugin.name}: cannot read ${path}: ${err instanceof Error ? err.message : String(err)}`)
     return EMPTY
   }
 }
@@ -138,8 +138,8 @@ async function fetchTicket($: EngineInterface, id: string, tracker: PlaneTracker
   const headers: Record<string, string> = token === null ? {} : { 'X-API-Key': token }
   const info = await Promise.race([
     $.http.fetch(workItemUrl(tracker, id), { headers }).then(r => parseWorkItem(r.status, r.text)),
-    $.clock.sleep(FETCH_TIMEOUT_MS).then((): TicketInfo => ({ status: 'error', reason: '連不到 Plane' })),
-  ]).catch((): TicketInfo => ({ status: 'error', reason: '連不到 Plane' }))
+    $.clock.sleep(FETCH_TIMEOUT_MS).then((): TicketInfo => ({ status: 'error', reason: 'Plane unreachable' })),
+  ]).catch((): TicketInfo => ({ status: 'error', reason: 'Plane unreachable' }))
   inflight.delete(id)
   await update($, tickets, all => ({ ...all, [id]: info }))
 }
@@ -307,14 +307,14 @@ async function openInEditor($: EngineInterface, href: string): Promise<void> {
   // The press lands only after the double-click window, and the VS Code CLI
   // takes a second or two more: say at once that the click was taken, so it
   // is not clicked again, which would turn into a double-click and drop it.
-  $.ui.toast(`glossary: 用 VS Code 打開 ${where}…`)
+  $.ui.toast(`${$.plugin.name}: opening ${where} in VS Code…`)
   const code = await resolveEditor($)
   if (code === null) {
-    $.ui.toast('glossary: 找不到 VS Code 的 code 指令')
+    $.ui.toast(`${$.plugin.name}: VS Code's code command was not found`)
     return
   }
   const ran = await $.process.run([...code.argv, '-g', where], code.env === undefined ? {} : { env: code.env }).catch(() => undefined)
-  if (ran === undefined || ran.exitCode !== 0) $.ui.toast(`glossary: 開不了 VS Code：${where}`)
+  if (ran === undefined || ran.exitCode !== 0) $.ui.toast(`${$.plugin.name}: VS Code could not open ${where}`)
 }
 
 function display(file: string): string {
@@ -354,18 +354,18 @@ async function addTerm($: EngineInterface, input: Record<string, unknown>): Prom
   const summary = text(input.summary)
   const aliases = Array.isArray(input.aliases) ? input.aliases.map(text).filter(a => a !== '') : []
   const isGlobal = input.scope === 'global'
-  if (name === '' || text(input.target) === '' || summary === '') return { deny: 'name、target、summary 都必填。' }
+  if (name === '' || text(input.target) === '' || summary === '') return { deny: 'name, target and summary are all required.' }
 
   const placed = await placeTerm($, text(input.target), isGlobal)
-  if ('missing' in placed) return { deny: `target 不存在：${text(input.target)}。只能登記確認存在的檔案或網址。` }
+  if ('missing' in placed) return { deny: `target does not exist: ${text(input.target)}. Only a file or URL known to exist can be registered.` }
   const { repo, target } = placed
 
   const wanted = [name, ...aliases]
   const clash = config.terms.find(t => spellings(t).some(s => wanted.includes(s)))
   if (clash !== undefined) {
-    if (clash.name === name && clash.target === target) return { result: `「${name}」已經登記過了，不用再登記。` }
+    if (clash.name === name && clash.target === target) return { result: `"${name}" is already registered; nothing to do.` }
     const existing = JSON.stringify({ name: clash.name, aliases: clash.aliases, target: clash.target, summary: clash.summary })
-    return { deny: `「${name}」和既有條目衝突，沒有寫入。既有條目：${existing}。要改既有條目請交給使用者。` }
+    return { deny: `"${name}" clashes with an existing entry and was not written. Existing entry: ${existing}. Changing an existing entry is up to the user.` }
   }
 
   const file = repo === undefined ? userFile : `${repo}/.claude/glossary.json`
@@ -374,7 +374,7 @@ async function addTerm($: EngineInterface, input: Record<string, unknown>): Prom
     try {
       raw = JSON.parse(await $.fs.read(file)) as { terms?: unknown }
     } catch {
-      return { deny: `${file} 不是合法的 JSON，沒有寫入。` }
+      return { deny: `${file} is not valid JSON; nothing was written.` }
     }
   }
   raw.terms = [...(Array.isArray(raw.terms) ? raw.terms : []), { name, ...(aliases.length > 0 ? { aliases } : {}), target, summary }]
@@ -389,8 +389,8 @@ async function addTerm($: EngineInterface, input: Record<string, unknown>): Prom
   rebuildConfig()
   addedThisTurn.push({ name, file })
   $.ui.invalidate('ui.render')
-  const fellBack = !isGlobal && repo === undefined ? '（target 不在任何 git repo 裡，所以寫進全域名詞庫）' : ''
-  return { result: `已登記「${name}」到 ${display(file)}${fellBack}，之後的回覆會自動加上連結和說明。` }
+  const fellBack = !isGlobal && repo === undefined ? ' (the target is in no git repo, so it went to the global glossary)' : ''
+  return { result: `Registered "${name}" in ${display(file)}${fellBack}; replies will link and explain it from now on.` }
 }
 
 export const register: Register = on => {
@@ -424,7 +424,7 @@ export const register: Register = on => {
   })
 
   on('tool.call', { tool: ADD_TOOL }, ($, e) => addTerm($, e as unknown as Record<string, unknown>)).catch(() => ({
-    deny: 'glossary: 登記時出錯，沒有寫入。',
+    deny: 'Registering the term failed; nothing was written.',
   }))
 
   // A tool that wrote a file makes its cached lines stale, and any file a
@@ -446,9 +446,9 @@ export const register: Register = on => {
     if (addedThisTurn.length > 0) {
       const byFile = new Map<string, string[]>()
       for (const { name, file } of addedThisTurn.splice(0)) byFile.set(file, [...(byFile.get(file) ?? []), name])
-      const parts = [...byFile].map(([file, names]) => `${names.join('、')}（${display(file)}）`)
+      const parts = [...byFile].map(([file, names]) => `${names.join(', ')} (${display(file)})`)
       // The engine prefixes the plugin's name to the line.
-      $.ui.log(`這輪新登記了 ${parts.join('；')}`)
+      $.ui.log(`registered this turn: ${parts.join('; ')}`)
     }
     return done
   })
@@ -494,8 +494,8 @@ export const register: Register = on => {
       if (ref.kind === 'commit') return `${ref.hash}  ${ref.info.date} ${ref.info.subject}`
       if (ref.kind === 'file') return ref.line === undefined ? ref.label : `${ref.label}  ${await lineOf($, ref.path, ref.line)}`
       const info = knownTickets[ref.id]
-      if (info === undefined) return `${ref.id}  讀取中…`
-      if (info.status === 'error') return `${ref.id}  （${info.reason}）`
+      if (info === undefined) return `${ref.id}  loading…`
+      if (info.status === 'error') return `${ref.id}  (${info.reason})`
       return `${ref.id}  [${info.state}] ${info.title}`
     }
 

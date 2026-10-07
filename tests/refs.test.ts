@@ -106,10 +106,10 @@ test('commit hashes in prose and inline code are candidates; numbers and words a
 })
 
 test('GitHub remotes give commit URLs, others none', async () => {
-  const url = 'https://github.com/yaotek/ck_cutter/commit/abc1234'
-  expect(githubCommitUrl('git@github.com:yaotek/ck_cutter.git', 'abc1234')).toBe(url)
-  expect(githubCommitUrl('https://github.com/yaotek/ck_cutter', 'abc1234')).toBe(url)
-  expect(githubCommitUrl('ssh://git@github.com/yaotek/ck_cutter.git\n', 'abc1234')).toBe(url)
+  const url = 'https://github.com/acme/widget/commit/abc1234'
+  expect(githubCommitUrl('git@github.com:acme/widget.git', 'abc1234')).toBe(url)
+  expect(githubCommitUrl('https://github.com/acme/widget', 'abc1234')).toBe(url)
+  expect(githubCommitUrl('ssh://git@github.com/acme/widget.git\n', 'abc1234')).toBe(url)
   expect(githubCommitUrl('http://gitea.local/me/repo.git', 'abc1234')).toBeUndefined()
 })
 
