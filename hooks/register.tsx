@@ -142,6 +142,10 @@ async function openInEditor($: EngineInterface, href: string): Promise<void> {
   const target = parseFileHref(href)
   if (target === undefined) return
   const where = target.line === undefined ? target.path : `${target.path}:${target.line}`
+  // The press lands only after the double-click window, and the VS Code CLI
+  // takes a second or two more: say at once that the click was taken, so it
+  // is not clicked again, which would turn into a double-click and drop it.
+  $.ui.toast(`glossary: 用 VS Code 打開 ${where}…`)
   // `code` is a .cmd shim on Windows, which only cmd can run.
   const argv = /^[A-Za-z]:/.test(home) ? ['cmd', '/c', 'code', '-g', where] : ['code', '-g', where]
   const ran = await $.process.run(argv).catch(() => undefined)
