@@ -1,4 +1,4 @@
-# glossary 設計
+# hoverref 設計
 
 ## 要解決的問題
 
@@ -23,13 +23,13 @@ agent 在對話裡常常提到工單編號、檔案路徑、專案內部的說�
 
 名詞庫是多層合併，前面的優先：
 
-1. session 根目錄的 `.claude/glossary.json`。
-2. 這個 session 碰過的每個 repo 的 `.claude/glossary.json`，最近碰過的優先。這樣從上層資料夾開的 session 也看得到底下 repo 的名詞。
-3. 全域的 `~/.claude/glossary.json`：工單規則、跨專案通用的名詞。
+1. session 根目錄的 `.claude/hoverref.json`。
+2. 這個 session 碰過的每個 repo 的 `.claude/hoverref.json`，最近碰過的優先。這樣從上層資料夾開的 session 也看得到底下 repo 的名詞。
+3. 全域的 `~/.claude/hoverref.json`：工單規則、跨專案通用的名詞。
 
 同一個詞（含別名）只認優先順序最前面那一條。repo 的檔案進版控，agent 新增的條目會出現在 git diff 裡，這是擋住錯誤條目的主要關卡。
 
-格式用 JSON，不用原本討論時舉例的 TOML。原因是 mod 的執行環境不能裝套件，JSON 不用另外寫解析器。範例在 `examples/glossary.example.json`。
+格式用 JSON，不用原本討論時舉例的 TOML。原因是 mod 的執行環境不能裝套件，JSON 不用另外寫解析器。範例在 `examples/hoverref.example.json`。
 
 Plane 的 API 金鑰不放在設定檔裡，設定檔只寫金鑰檔的路徑（`tokenFile`）。
 

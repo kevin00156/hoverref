@@ -6,7 +6,7 @@ export type CommitInfo = { full: string; date: string; author: string; subject: 
 
 declare module 'claude-code' {
   interface PluginState {
-    glossary: {
+    hoverref: {
       tickets: Record<string, TicketInfo>
       // null: no repo the session knows holds a commit by that hash.
       commits: Record<string, CommitInfo | null>

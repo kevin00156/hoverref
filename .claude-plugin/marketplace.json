@@ -1,0 +1,12 @@
+{
+  "name": "hoverref",
+  "description": "hoverref: hover cards and links for the references in Claude Code replies",
+  "owner": { "name": "Kevin Chang", "email": "contact@qazsskevin.org" },
+  "plugins": [
+    {
+      "name": "hoverref",
+      "source": "./",
+      "description": "Links ticket IDs, file paths, commit hashes and project terms in Claude's replies, with a hover card explaining each"
+    }
+  ]
+}

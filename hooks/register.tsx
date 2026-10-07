@@ -23,16 +23,17 @@ import {
 } from './refs'
 import type { Config, Link, Match, PlaneTracker, Term } from './refs'
 
-const tickets = atom({ plugin: 'glossary', key: 'tickets' } as const, {} as Record<string, TicketInfo>)
-const commits = atom({ plugin: 'glossary', key: 'commits' } as const, {} as Record<string, CommitInfo | null>)
+const tickets = atom({ plugin: 'hoverref', key: 'tickets' } as const, {} as Record<string, TicketInfo>)
+const commits = atom({ plugin: 'hoverref', key: 'commits' } as const, {} as Record<string, CommitInfo | null>)
 
 const FETCH_TIMEOUT_MS = 5000
 const MAX_FILE_CHECKS = 60
 const MAX_ROOTS = 12
 const MAX_SEEDED_PATHS = 200
-const ADD_TOOL = 'mcp__glossary__add'
+const ADD_TOOL = 'mcp__hoverref__add'
+const CONFIG_FILE = 'hoverref.json'
 
-const USAGE = `# Glossary links
+const USAGE = `# Hover references
 
 When your replies are shown to the user, ticket IDs, commit hashes, file paths that exist and registered project terms are turned into links with a hover card explaining them. Write them as plain text; do not add your own markdown links for them.
 
@@ -99,7 +100,7 @@ async function loadLayer($: EngineInterface, path: string, base: string): Promis
 async function ensureLayer($: EngineInterface, dir: string): Promise<void> {
   const key = dir.toLowerCase()
   if (repoLayers.has(key)) return
-  const file = `${dir}/.claude/glossary.json`
+  const file = `${dir}/.claude/${CONFIG_FILE}`
   repoLayers.set(key, file.toLowerCase() === userFile.toLowerCase() ? EMPTY : await loadLayer($, file, dir))
 }
 
@@ -107,7 +108,7 @@ async function loadConfig($: EngineInterface): Promise<void> {
   ready = false
   home = slashes((await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')) ?? '')
   root = slashes(await $.session.root())
-  userFile = `${home}/.claude/glossary.json`
+  userFile = `${home}/.claude/${CONFIG_FILE}`
   userLayer = await loadLayer($, userFile, home)
   repoLayers.clear()
   roots = []
@@ -368,7 +369,7 @@ async function addTerm($: EngineInterface, input: Record<string, unknown>): Prom
     return { deny: `"${name}" clashes with an existing entry and was not written. Existing entry: ${existing}. Changing an existing entry is up to the user.` }
   }
 
-  const file = repo === undefined ? userFile : `${repo}/.claude/glossary.json`
+  const file = repo === undefined ? userFile : `${repo}/.claude/${CONFIG_FILE}`
   let raw: { terms?: unknown } = {}
   if (await $.fs.exists(file)) {
     try {
@@ -420,7 +421,7 @@ export const register: Register = on => {
 
   on('prompt.compose', async ($, e, next) => {
     const composed = await next(e)
-    return { sections: [...composed.sections, { id: 'glossary:usage', text: USAGE, scope: 'session' }] }
+    return { sections: [...composed.sections, { id: 'hoverref:usage', text: USAGE, scope: 'session' }] }
   })
 
   on('tool.call', { tool: ADD_TOOL }, ($, e) => addTerm($, e as unknown as Record<string, unknown>)).catch(() => ({

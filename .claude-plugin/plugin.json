@@ -1,6 +1,11 @@
 {
-  "name": "glossary",
+  "name": "hoverref",
   "version": "0.1.0",
-  "description": "Turns ticket IDs in Claude's replies into links with a hover card showing title and state",
+  "description": "Links ticket IDs, file paths, commit hashes and project terms in Claude's replies, with a hover card explaining each",
+  "author": { "name": "Kevin Chang", "email": "contact@qazsskevin.org" },
+  "homepage": "https://github.com/kevin00156/hoverref",
+  "repository": "https://github.com/kevin00156/hoverref",
+  "license": "MIT",
+  "keywords": ["links", "hover", "glossary", "tickets", "plane", "mod"],
   "types": "./types/index.d.ts"
 }
