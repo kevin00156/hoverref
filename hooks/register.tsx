@@ -277,6 +277,29 @@ async function resolveRef($: EngineInterface, m: Match, lookup: Lookup): Promise
   return (await isFile($, path)) ? { kind: 'term', key, href: fileHref(path), term } : { kind: 'term', key, term }
 }
 
+type Editor = { argv: string[]; env?: Record<string, string> }
+// undefined: not looked for yet; null: VS Code's CLI was not found.
+let editor: Editor | null | undefined
+
+// On Windows `code` is a .cmd shim, and running it through cmd would read
+// & | < > in a file name as further commands. The shim names the Electron
+// binary and the CLI script it starts; those are run directly instead, so
+// the path is only ever one argument.
+async function resolveEditor($: EngineInterface): Promise<Editor | null> {
+  if (editor !== undefined) return editor
+  if (!/^[A-Za-z]:/.test(home)) return (editor = { argv: ['code'] })
+  const found = await $.process.run(['where.exe', 'code.cmd']).catch(() => undefined)
+  const shim = found?.exitCode === 0 ? slashes(found.stdout.split(/\r?\n/)[0]?.trim() ?? '') : ''
+  const text = shim === '' ? '' : await $.fs.read(shim).catch(() => '')
+  const m = /"%~dp0([^"]+\.exe)"\s+"%~dp0([^"]+\.js)"/i.exec(text)
+  const dir = parentDir(shim)
+  editor =
+    m === null || dir === undefined
+      ? null
+      : { argv: [`${dir}/${slashes(m[1] ?? '')}`, `${dir}/${slashes(m[2] ?? '')}`], env: { ELECTRON_RUN_AS_NODE: '1' } }
+  return editor
+}
+
 async function openInEditor($: EngineInterface, href: string): Promise<void> {
   const target = parseFileHref(href)
   if (target === undefined) return
@@ -285,9 +308,12 @@ async function openInEditor($: EngineInterface, href: string): Promise<void> {
   // takes a second or two more: say at once that the click was taken, so it
   // is not clicked again, which would turn into a double-click and drop it.
   $.ui.toast(`glossary: 用 VS Code 打開 ${where}…`)
-  // `code` is a .cmd shim on Windows, which only cmd can run.
-  const argv = /^[A-Za-z]:/.test(home) ? ['cmd', '/c', 'code', '-g', where] : ['code', '-g', where]
-  const ran = await $.process.run(argv).catch(() => undefined)
+  const code = await resolveEditor($)
+  if (code === null) {
+    $.ui.toast('glossary: 找不到 VS Code 的 code 指令')
+    return
+  }
+  const ran = await $.process.run([...code.argv, '-g', where], code.env === undefined ? {} : { env: code.env }).catch(() => undefined)
   if (ran === undefined || ran.exitCode !== 0) $.ui.toast(`glossary: 開不了 VS Code：${where}`)
 }
 
