@@ -8,11 +8,14 @@ import {
   browseUrl,
   fileHref,
   fitWidth,
+  isRelative,
   linkify,
   mergeConfigs,
   parseConfig,
+  parentDir,
   parseFileHref,
   parseTerm,
+  pushRoot,
   resolvePath,
   scanBlock,
   spellings,
@@ -24,6 +27,8 @@ const tickets = atom({ plugin: 'glossary', key: 'tickets' } as const, {} as Reco
 
 const FETCH_TIMEOUT_MS = 5000
 const MAX_FILE_CHECKS = 60
+const MAX_ROOTS = 12
+const MAX_SEEDED_PATHS = 200
 const ADD_TOOL = 'mcp__glossary__add'
 
 const USAGE = `# Glossary links
@@ -50,6 +55,11 @@ const inflight = new Set<string>()
 // null: the path is not a file. lines: null until a card first needs them.
 const files = new Map<string, { lines: string[] | null } | null>()
 const addedThisTurn: string[] = []
+// Repos this session has read or written files in, most recent first. A
+// relative path the session root does not hold is looked up in these, since
+// an agent names files relative to the repo it is working in.
+let roots: string[] = []
+const repoOf = new Map<string, string>()
 
 const slashes = (p: string) => p.replace(/\\/g, '/')
 
@@ -122,12 +132,53 @@ async function targetExists($: EngineInterface, target: string, base: string): P
   return isFile($, resolvePath(target, base, home))
 }
 
+// The repo a file belongs to: the nearest directory above it holding .git,
+// or the file's own directory when there is none.
+async function repoRootOf($: EngineInterface, file: string): Promise<string | undefined> {
+  const start = parentDir(file)
+  if (start === undefined) return undefined
+  const cached = repoOf.get(start)
+  if (cached !== undefined) return cached
+  let found = start
+  for (let dir: string | undefined = start, depth = 0; dir !== undefined && depth < 12; dir = parentDir(dir), depth++) {
+    if (await $.fs.exists(`${dir}/.git`)) {
+      found = dir
+      break
+    }
+  }
+  repoOf.set(start, found)
+  return found
+}
+
+async function noteFile($: EngineInterface, path: string): Promise<void> {
+  const repo = await repoRootOf($, resolvePath(path, root, home))
+  if (repo !== undefined) roots = pushRoot(roots, repo, MAX_ROOTS)
+}
+
+// Replayed oldest first, so the most recently touched repo ends up first.
+async function seedRoots($: EngineInterface): Promise<void> {
+  const rows = await $.session.messages()
+  const paths = rows.flatMap(r => r.toolUses).map(u => u.input.file_path)
+  for (const path of paths.filter((p): p is string => typeof p === 'string').slice(-MAX_SEEDED_PATHS)) {
+    await noteFile($, path)
+  }
+}
+
+async function findFile($: EngineInterface, path: string): Promise<string | undefined> {
+  const bases = isRelative(path) ? [root, ...roots] : [root]
+  for (const base of bases) {
+    const candidate = resolvePath(path, base, home)
+    if (await isFile($, candidate)) return candidate
+  }
+  return undefined
+}
+
 async function resolveRef($: EngineInterface, m: Match, budget: { files: number }): Promise<Ref | undefined> {
   if (m.kind === 'ticket') return { kind: 'ticket', key: m.id, href: browseUrl(m.tracker, m.id), id: m.id, tracker: m.tracker }
   if (m.kind === 'file') {
     if (budget.files-- <= 0) return undefined
-    const path = resolvePath(m.path, root, home)
-    if (!(await isFile($, path))) return undefined
+    const path = await findFile($, m.path)
+    if (path === undefined) return undefined
     const label = m.line === undefined ? m.path : `${m.path}:${m.line}`
     return { kind: 'file', key: `${path}#${m.line ?? ''}`, href: fileHref(path, m.line), label, path, ...(m.line === undefined ? {} : { line: m.line }) }
   }
@@ -190,6 +241,8 @@ async function addTerm($: EngineInterface, input: Record<string, unknown>): Prom
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await loadConfig($)
+    roots = []
+    await seedRoots($).catch(() => undefined)
     await $.tool.register({
       name: 'add',
       description:
@@ -220,11 +273,15 @@ export const register: Register = on => {
     deny: 'glossary: 登記時出錯，沒有寫入。',
   }))
 
-  // A tool that wrote a file makes its cached lines stale.
+  // A tool that wrote a file makes its cached lines stale, and any file a
+  // tool touched tells which repo the session is working in.
   on('tool.call', async ($, e, next) => {
     const ran = await next(e)
     const path = (e as { file_path?: unknown }).file_path
-    if (typeof path === 'string') files.delete(resolvePath(path, root, home))
+    if (typeof path === 'string') {
+      files.delete(resolvePath(path, root, home))
+      await noteFile($, path)
+    }
     return ran
   }).catch(($, e, next) => next(e))
 

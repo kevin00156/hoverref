@@ -4,10 +4,13 @@ import {
   displayWidth,
   fileHref,
   fitWidth,
+  isRelative,
   linkify,
   mergeConfigs,
   parseConfig,
+  parentDir,
   parseFileHref,
+  pushRoot,
   resolvePath,
   scanBlock,
   splitBlocks,
@@ -107,6 +110,15 @@ test('relative, home and absolute paths resolve', async () => {
   expect(resolvePath('./src/a.ts', 'C:/repo/', 'C:/Users/me')).toBe('C:/repo/src/a.ts')
   expect(resolvePath('~/x.md', '/r', 'C:/Users/me')).toBe('C:/Users/me/x.md')
   expect(resolvePath('D:\\a\\b.ts', '/r', '/h')).toBe('D:/a/b.ts')
+})
+
+test('relative paths, parents and the recent-roots list', async () => {
+  expect(['hooks/a.ts', './a.ts', 'C:\\a.ts', '/a.ts', '~/a.ts'].map(isRelative)).toEqual([true, true, false, false, false])
+  expect(parentDir('C:/repo/hooks/a.ts')).toBe('C:/repo/hooks')
+  expect(parentDir('C:/repo')).toBe('C:')
+  expect(parentDir('C:')).toBeUndefined()
+  expect(parentDir('/a')).toBe('/')
+  expect(pushRoot(['C:/b', 'C:/A'], 'c:/a', 2)).toEqual(['c:/a', 'C:/b'])
 })
 
 test('a malformed config names the field', async () => {

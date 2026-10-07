@@ -233,6 +233,23 @@ export function parseFileHref(href: string): { path: string; line?: number } | u
   return { path, ...(m[2] !== undefined ? { line: Number(m[2]) } : {}) }
 }
 
+export function isRelative(path: string): boolean {
+  return !/^(?:[A-Za-z]:[\\/]|[\\/]|~[\\/])/.test(path)
+}
+
+export function parentDir(path: string): string | undefined {
+  const p = path.replace(/[\\/]+$/, '')
+  const cut = p.lastIndexOf('/')
+  // A drive or filesystem root has no parent.
+  if (cut < 0 || /^[A-Za-z]:$/.test(p) || p === '') return undefined
+  return cut === 0 ? '/' : p.slice(0, cut)
+}
+
+// Most recent first, one entry per directory whatever its case, at most `max`.
+export function pushRoot(roots: readonly string[], dir: string, max: number): string[] {
+  return [dir, ...roots.filter(r => r.toLowerCase() !== dir.toLowerCase())].slice(0, max)
+}
+
 export function resolvePath(path: string, base: string, home: string): string {
   const p = path.replace(/\\/g, '/')
   if (/^[A-Za-z]:\//.test(p) || p.startsWith('/')) return p
