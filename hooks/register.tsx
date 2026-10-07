@@ -51,6 +51,10 @@ type Lookup = { files: number; commits: Record<string, CommitInfo | null> }
 // Module variables start over on a hot reload; session.start fires again
 // then, so they are refilled before the next draw needs them.
 let config: Config = EMPTY
+// False until session.start has read the config and replayed the touched
+// repos: the transcript is drawn before that, and a commit looked up then
+// would be searched for in the session root alone.
+let ready = false
 let home = ''
 let root = ''
 let userFile = ''
@@ -100,6 +104,7 @@ async function ensureLayer($: EngineInterface, dir: string): Promise<void> {
 }
 
 async function loadConfig($: EngineInterface): Promise<void> {
+  ready = false
   home = slashes((await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')) ?? '')
   root = slashes(await $.session.root())
   userFile = `${home}/.claude/glossary.json`
@@ -109,6 +114,14 @@ async function loadConfig($: EngineInterface): Promise<void> {
   await ensureLayer($, root)
   await seedRoots($).catch(() => undefined)
   rebuildConfig()
+  ready = true
+  await forgetMissingCommits($)
+}
+
+// "Not a commit" only holds for the repos searched so far: a repo the session
+// reaches later may hold it.
+async function forgetMissingCommits($: EngineInterface): Promise<void> {
+  await update($, commits, all => Object.fromEntries(Object.entries(all).filter(([, info]) => info !== null)))
 }
 
 async function readToken($: EngineInterface, tracker: PlaneTracker): Promise<string | null> {
@@ -200,9 +213,11 @@ async function gitRootOf($: EngineInterface, file: string): Promise<string | und
 
 async function noteDir($: EngineInterface, dir: string): Promise<void> {
   const moved = roots[0]?.toLowerCase() !== dir.toLowerCase()
+  const isNew = !searchDirs().some(d => d.toLowerCase() === dir.toLowerCase())
   roots = pushRoot(roots, dir, MAX_ROOTS)
   await ensureLayer($, dir)
   rebuildConfig()
+  if (isNew && ready) await forgetMissingCommits($)
   if (moved) $.ui.invalidate('ui.render')
 }
 
@@ -215,7 +230,9 @@ async function noteFile($: EngineInterface, path: string): Promise<void> {
 // Replayed oldest first, so the most recently touched directory ends up first.
 async function seedRoots($: EngineInterface): Promise<void> {
   const rows = await $.session.messages()
-  const paths = rows.flatMap(r => r.toolUses).map(u => u.input.file_path)
+  // Rows the engine typed as always carrying toolUses are not trusted to: one
+  // missing would throw and leave every repo unknown.
+  const paths = rows.flatMap(r => r.toolUses ?? []).map(u => u.input?.file_path)
   for (const path of paths.filter((p): p is string => typeof p === 'string').slice(-MAX_SEEDED_PATHS)) {
     await noteFile($, path)
   }
@@ -233,6 +250,7 @@ async function findFile($: EngineInterface, path: string): Promise<string | unde
 async function resolveRef($: EngineInterface, m: Match, lookup: Lookup): Promise<Ref | undefined> {
   if (m.kind === 'ticket') return { kind: 'ticket', key: m.id, href: browseUrl(m.tracker, m.id), id: m.id, tracker: m.tracker }
   if (m.kind === 'commit') {
+    if (!ready) return undefined
     const info = lookup.commits[m.hash]
     if (info === undefined && !inflight.has(`commit:${m.hash}`)) {
       inflight.add(`commit:${m.hash}`)
